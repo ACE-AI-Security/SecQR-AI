@@ -11,6 +11,11 @@ import time
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, classification_report
 import gc
+
+import dask.dataframe as dd
+from dask_ml.model_selection import train_test_split as dask_train_test_split
+import dask.array as da
+from dask import delayed, compute
 import re
 from urllib.parse import urlparse
 import tld
@@ -18,7 +23,7 @@ import dns.resolver
 from tld.exceptions import TldDomainNotFound
 
 # 데이터 불러오기
-data = pd.read_csv('AI/malicious_phish.csv')
+data = pd.read_csv('malicious_phish.csv')
 print(data)
 
 # 데이터 전처리
@@ -55,6 +60,7 @@ def parse_url_components(url):
     subdomain = ".".join(parsed_url.netloc.split(".")[:-2])
     
     return protocol, domain, subdomain, path, params
+
 
 # 각 구성 요소의 특징 추출 함수 정의
 def extract_component_features(protocol, domain, subdomain, path, params):
@@ -106,6 +112,7 @@ def extract_features(url):
     combined_features = np.concatenate([bert_features, additional_features])
     
     return combined_features
+
 
 # 추가적인 URL 특징 추출 함수 정의
 def get_url_info(url):
@@ -201,6 +208,8 @@ sm = SMOTE(random_state=42)
 X_train, y_train = sm.fit_resample(X_train, y_train)
 
 print("model 시작")
+max_bins = 255  # 히스토그램의 구간 수
+
 model = HistGradientBoostingClassifier()
 print("model fit중")
 model.fit(X_train, y_train)

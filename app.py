@@ -1,54 +1,128 @@
 from flask import Flask, request, jsonify, render_template
-import pickle
-import torch
-from transformers import BertTokenizer, BertModel
+from flask_cors import CORS
+from pymongo import MongoClient
 from urllib.parse import urlparse
 import re
 import tld
-import dns.resolver 
+import dns.resolver
+from bson import ObjectId
+from transformers import BertTokenizer, BertModel
+import torch
+import pickle
+from dotenv import load_dotenv
+import os
+import logging
 import numpy as np
+import sys
 
+# 환경 변수 로드
+load_dotenv()
+
+# Flask 애플리케이션 설정
 app = Flask(__name__)
-model = pickle.load(open('model.pkl', 'rb'))
+CORS(app)
 
-# BERT 모델 로드
-bert_model = BertModel.from_pretrained('bert-base-uncased', output_hidden_states=True)
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+# 로깅 설정
+# logging.basicConfig(level=logging.INFO)
+# logger = logging.getLogger(__name__)
+
+##################################################
+# 로그 파일 설정
+log_file_path = "app.log"
+
+# 로그 파일 설정
+file_handler = logging.FileHandler(log_file_path)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+file_handler.setLevel(logging.DEBUG)
+
+app.logger = logging.getLogger(__name__)
+app.logger.setLevel(logging.DEBUG)
+app.logger.addHandler(file_handler)
+
+print(f"Current log level: {logging.getLevelName(app.logger.level)}")
+for handler in app.logger.handlers:
+    print(f"Handler: {handler}, Level: {logging.getLevelName(handler.level)}")
+
+
+# 테스트 로그 메시지
+app.logger.debug("This is a debug message.")
+app.logger.info("This is an info message.")
+app.logger.warning("This is a warning message.")
+app.logger.error("This is an error message.")
+app.logger.critical("This is a critical message.")
+##################################################
+
+# MongoDB 설정
+load_dotenv(os.path.join('..', 'backend_flask', '.env'))
+mongo_uri = os.getenv('MONGO_URI')
+db_name = os.getenv('DB_NAME')
+collection_name = os.getenv('COLLECTION_NAME')
+
+client = MongoClient(mongo_uri)
+db = client[db_name]
+collection = db[collection_name]
+
+collection.create_index('url', unique=True)
+
+# 모델 로드
+try:
+    model = pickle.load(open('model.pkl', 'rb'))
+    # logger.info("Model loaded successfully")
+    app.logger.info("Model loaded successfully")
+except Exception as e:
+    # logger.error(f"Error loading model: {e}")
+    app.logger.error(f"Error loading model: {e}")
+
+# BERT 모델 및 토크나이저 로드
+try:
+    bert_model = BertModel.from_pretrained('bert-base-uncased', output_hidden_states=True)
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    # logger.info("BERT model and tokenizer loaded successfully")
+    app.logger.info("BERT model and tokenizer loaded successfully")
+except Exception as e:
+    # logger.error(f"Error loading BERT model or tokenizer: {e}")
+    app.logger.error(f"Error loading BERT model or tokenizer: {e}")
+    
+  
+###############################################################    
+# 도메인 추출 함수
+def extract_domain_from_url(url):
+    parsed_url = urlparse(url)
+    domain = parsed_url.scheme + "://" + parsed_url.netloc  # 프로토콜과 도메인 결합
+    return domain
+############################################################### 
 
 # URL 정보 추출 함수 (판단근거로 사용)
 def get_url_info(url):
     url_info = {}
-    
-    # URL 길이
+
+    url_info['url'] = url
     url_info['url_len'] = len(url)
-    
-    #fail_silently=True로 tld unknown일 경우 0으로 나오게 일단 함
-    parsed_tld = tld.get_tld(url, as_object=True, fail_silently=True, fix_protocol=True)
-    # 도메인 정보 추출
+
+    parsed_tld = tld.get_tld(url, as_object=True, fail_silently=False, fix_protocol=True)
     try:
         url_info['domain_len'] = len(parsed_tld.domain)
         url_info['tld'] = parsed_tld.tld
-        
     except Exception as e:
+        # logger.error(f"Error parsing TLD: {e}")
+        app.logger.error(f"Error parsing TLD: {e}")
         url_info['domain_len'] = 0
         url_info['tld'] = ""
-        
-        
-    # 서브도메인 존재 여부
+
     def having_Sub_Domain(parsed_tld):
         if parsed_tld is not None:
             subdomain = parsed_tld.subdomain
             if subdomain == "":
                 return 0
-            return 1 
-        return 0 
-    url_info['sub_domain'] = having_Sub_Domain(parsed_tld)
+            return 1
+        return 0
     
-    # 파라미터 길이
+    url_info['sub_domain'] = having_Sub_Domain(parsed_tld)
+
     parsed_url = urlparse(url)
     url_info['parameter_len'] = len(parsed_url.query)
-    
-    # IP 주소 존재 여부
+
     ipv4_pattern = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})')
     ipv6_pattern = re.compile(r'(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|'
                               r'([0-9a-fA-F]{1,4}:){1,7}:|'
@@ -65,80 +139,54 @@ def get_url_info(url):
                               r'([0-9a-fA-F]{1,4}:){1,4}'
                               r':([0-9]{1,3}\.){3,3}[0-9]{1,3})')
     url_info['having_ip_address'] = 1 if ipv4_pattern.search(url) or ipv6_pattern.search(url) else 0
-    
-    # 프로토콜
+
     url_info['protocol'] = 1 if urlparse(url).scheme == "http" else 0
-    
-    # 비정상 URL 여부
-    #hostname = parsed_url.hostname
-    #url_info['abnormal_url'] = 1 if hostname and re.search(hostname, url) else 0
-    # 비정상 URL 여부: DNS 조회로 도메인 유효성 검사
+
     hostname = parsed_url.hostname
-    
     url_info['abnormal_url'] = 0
     if hostname:
         try:
-            # DNS 조회를 통해 호스트 이름의 유효성을 검사
-            dns.resolver.resolve(hostname, 'A')  # A 레코드를 조회하여 호스트 이름의 존재 여부 확인
+            dns.resolver.resolve(hostname, 'A')
         except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
             url_info['abnormal_url'] = 1
         except Exception as e:
             url_info['abnormal_url'] = 1
-    
-    return url_info
 
+    return url_info
+    
+    
+    
 # URL 구성 요소 추출 함수 정의
 def parse_url_components(url):
-    # URL 파싱
     parsed_url = urlparse(url)
-    
-    # 구성 요소 추출
     protocol = parsed_url.scheme
     domain = parsed_url.netloc
     path = parsed_url.path
     params = parsed_url.query
     subdomain = ".".join(parsed_url.netloc.split(".")[:-2])
-    
     return protocol, domain, subdomain, path, params
 
 # 각 구성 요소의 특징 추출 함수 정의
 def extract_component_features(protocol, domain, subdomain, path, params):
     features = {}
-    
-    # 프로토콜: http/https
     features['protocol_http'] = 1 if protocol == "http" else 0
-    
-    # 도메인 길이
     features['domain_len'] = len(domain)
-    
-    # 서브도메인 존재 여부
     features['has_subdomain'] = 1 if subdomain else 0
-    
-    # 경로 길이
     features['path_len'] = len(path)
-    
-    # 파라미터 길이
     features['params_len'] = len(params)
-    
-    # IP 주소 포함 여부
     features['has_ip_address'] = 1 if re.search(r'\d+\.\d+\.\d+\.\d+', domain) else 0
-    
     return features
 
 def standardize_url(url):
     if not url.endswith('/'):
-        url = url + '/'  # 마지막에 '/' 추가
+        url = url + '/'
     return url
 
 def extract_features(url):
-    
-    # URL 표준화
     url = standardize_url(url)
-    
     if not url.startswith(("http://", "https://")):
         url = "http://" + url
 
-    # BERT 인코딩
     inputs = tokenizer.encode_plus(url, return_tensors='pt', add_special_tokens=True, max_length=128, truncation=True)
     input_ids = inputs['input_ids']
     attention_mask = inputs.get('attention_mask', None)
@@ -146,51 +194,98 @@ def extract_features(url):
     with torch.no_grad():
         outputs = bert_model(input_ids, attention_mask=attention_mask)
         hidden_states = outputs.hidden_states
-        
-    # 마지막 4개의 히든 레이어 평균
+
     token_vecs = [torch.mean(hidden_states[layer][0], dim=0) for layer in range(-4, 0)]
     bert_features = torch.stack(token_vecs).numpy().flatten()
-    
-    # URL 구성 요소별 특징 추출
+
     protocol, domain, subdomain, path, params = parse_url_components(url)
     url_component_features = extract_component_features(protocol, domain, subdomain, path, params)
     additional_features = np.array(list(url_component_features.values()))
-    
-    # 특징 결합
+
     combined_features = np.concatenate([bert_features, additional_features])
-    
     return combined_features
 
+def jsonify_with_objectid(data):
+    if isinstance(data, dict):
+        return {k: jsonify_with_objectid(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [jsonify_with_objectid(item) for item in data]
+    elif isinstance(data, ObjectId):
+        return str(data)
+    elif isinstance(data, np.integer):  # numpy 정수형 처리
+        return int(data)
+    elif isinstance(data, np.floating):  # numpy 부동소수점 처리
+        return float(data)
+    else:
+        return data
+            
 @app.route('/')
 def home():
-    return render_template('index.html')
-
+    prediction_api_url = os.getenv('PREDICTION_API_URL')
+    return render_template('index.html', prediction_api_url=prediction_api_url)
+    
 @app.route('/predict', methods=['POST'])
 def predict():
+    app.logger.debug("Received POST request")
     url = request.form['url']
+    print(f"Received URL: {url}")
+    app.logger.info(f"Received URL: {url}")
     
-    # URL 정보를 추출
-    url_info = get_url_info(url)
+    # # 테스트 핸들러 추가
+    # test_handler = logging.StreamHandler(sys.stdout)
+    # test_handler.setLevel(logging.INFO)
+    # app.logger.addHandler(test_handler)
     
-    # URL을 BERT 토크나이저를 사용하여 특징 추출
-    features = extract_features(url)
+    try:
+        ############################################################### 
+        # 1. 도메인 추출
+        domain_url = extract_domain_from_url(url)
+        app.logger.info(f"Extracted domain URL: {domain_url}")
+        
+        # 2. DB에서 도메인 기반 비교
+        # url_info = collection.find_one({"url": url})
+        url_info = collection.find_one({"url": {"$regex": f"^{domain_url}"}})
+        if url_info:
+            app.logger.info(f"URL found in DB with domain: {domain_url} | Type: {url_info['predicted_type']}")
+        else:
+            app.logger.info(f"No matching URL found in DB for domain: {domain_url}")
+        ############################################################### 
     
-    #예측 결과
-    prediction = model.predict(features.reshape(1, -1))
-    
-    # 로그에 prediction 값 출력
-    app.logger.debug(f"Prediction value: {prediction[0]}")
-    
-    
-    #json 형식 응답 반환
-    # return jsonify({'prediction': prediction[0]})
-    
-    # 예측 결과와 URL 정보를 반환
-    return jsonify({
-        # 'prediction': prediction[0],
-        'prediction': int(prediction[0]),
-        'url_info': url_info
-    })
-    
+        #3. 도메인 일치하는 게 없으면 기존 절차 수행
+        if not url_info:
+            # url_info = get_url_info(url)
+            url_info = get_url_info(domain_url)
+            app.logger.info(f"Extracted URL info: {url_info}")
+
+            # features = extract_features(url)
+            features = extract_features(domain_url)
+            app.logger.info(f"Extracted features: {features}")
+
+            prediction = model.predict(features.reshape(1, -1))
+            app.logger.info(f"Prediction: {prediction}")
+
+            url_info['predicted_type'] = int(prediction[0])  # numpy 정수형을 일반 int로 변환
+            try:
+                collection.insert_one(url_info)
+            except Exception as e:
+                app.logger.error(f"Error inserting URL info into DB: {e}")
+        else:
+            prediction = [url_info['predicted_type']]
+
+        # 4. 결과 반환 전 URL 정보 직렬화   
+        url_info_serializable = jsonify_with_objectid(url_info)
+        app.logger.info(f"URL info serializable: {url_info_serializable}")
+
+        return jsonify({
+            'prediction': int(prediction[0]),  # numpy 정수형을 일반 int로 변환
+            'url_info': url_info_serializable
+        })
+
+    except Exception as e:
+        app.logger.error(f"Error during prediction: {e}")
+        return jsonify({'error': 'Error during prediction'}), 500
+        
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5500))
+    app.logger.info(f"Starting server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
