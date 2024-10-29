@@ -8,7 +8,6 @@
   </head>
   <body>
     <h1>URL Prediction</h1>
-    <!-- 수정전 : <form id="url-form" >  -->
     <form id="url-form">
       <label for="url">Enter URL:</label>
       <input type="text" id="url" name="url" required />
@@ -22,13 +21,14 @@
 
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <script>
-      const predictionApiUrl = "{{ prediction_api_url }}";
-      console.log("Prediction API URL:", predictionApiUrl);
+      //const predictionApiUrl = "{{ prediction_api_url }}" || "/predict";
+      const predictionApiUrl = "/predict";
 
       async function getPrediction(url) {
         try {
           const response = await axios.post(
-            predictionApiUrl + "predict",
+            //predictionApiUrl + "predict",
+            predictionApiUrl,
             new URLSearchParams({ url: url })
           );
           console.log("Prediction:", response.data.prediction);
@@ -62,7 +62,6 @@
         .addEventListener("submit", function (event) {
           event.preventDefault();
           const url = document.getElementById("url").value;
-          console.log("Form submitted with URL:", url); // 폼 제출 확인
           getPrediction(url);
         });
     </script>

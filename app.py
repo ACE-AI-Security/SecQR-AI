@@ -68,10 +68,8 @@ collection.create_index('url', unique=True)
 # 모델 로드
 try:
     model = pickle.load(open('model.pkl', 'rb'))
-    # logger.info("Model loaded successfully")
     app.logger.info("Model loaded successfully")
 except Exception as e:
-    # logger.error(f"Error loading model: {e}")
     app.logger.error(f"Error loading model: {e}")
 
 # BERT 모델 및 토크나이저 로드
@@ -89,8 +87,11 @@ except Exception as e:
 # 도메인 추출 함수
 def extract_domain_from_url(url):
     parsed_url = urlparse(url)
-    domain = parsed_url.scheme + "://" + parsed_url.netloc  # 프로토콜과 도메인 결합
-    return domain
+    if parsed_url.netloc:  # netloc(도메인)이 있는지 확인
+        domain = parsed_url.scheme + "://" + parsed_url.netloc  # 프로토콜과 도메인을 결합하여 반환
+        return domain
+    else:
+        return url
 ############################################################### 
 
 # URL 정보 추출 함수 (판단근거로 사용)
@@ -153,9 +154,7 @@ def get_url_info(url):
             url_info['abnormal_url'] = 1
 
     return url_info
-    
-    
-    
+   
 # URL 구성 요소 추출 함수 정의
 def parse_url_components(url):
     parsed_url = urlparse(url)
@@ -221,7 +220,7 @@ def jsonify_with_objectid(data):
             
 @app.route('/')
 def home():
-    prediction_api_url = os.getenv('PREDICTION_API_URL')
+    prediction_api_url = os.getenv('PREDICTION_API_URL', '/predict')
     return render_template('index.html', prediction_api_url=prediction_api_url)
     
 @app.route('/predict', methods=['POST'])
@@ -231,50 +230,69 @@ def predict():
     print(f"Received URL: {url}")
     app.logger.info(f"Received URL: {url}")
     
-    # # 테스트 핸들러 추가
-    # test_handler = logging.StreamHandler(sys.stdout)
-    # test_handler.setLevel(logging.INFO)
-    # app.logger.addHandler(test_handler)
-    
     try:
         ############################################################### 
         # 1. 도메인 추출
-        domain_url = extract_domain_from_url(url)
-        app.logger.info(f"Extracted domain URL: {domain_url}")
+        try:
+            domain_url = extract_domain_from_url(url)
+            app.logger.info(f"Extracted domain URL: {domain_url}")
+        except Exception as e:
+            app.logger.error(f"Error extracting domain URL: {e}")
+            raise
         
         # 2. DB에서 도메인 기반 비교
-        # url_info = collection.find_one({"url": url})
-        url_info = collection.find_one({"url": {"$regex": f"^{domain_url}"}})
-        if url_info:
-            app.logger.info(f"URL found in DB with domain: {domain_url} | Type: {url_info['predicted_type']}")
-        else:
-            app.logger.info(f"No matching URL found in DB for domain: {domain_url}")
+        try:
+            url_info = collection.find_one({"url": {"$regex": f"^{domain_url}"}})
+            if url_info:
+                app.logger.info(f"URL found in DB with domain: {domain_url} | Type: {url_info['predicted_type']}")
+            else:
+                app.logger.info(f"No matching URL found in DB for domain: {domain_url}")
+        except Exception as e:
+            app.logger.error(f"Error finding URL in DB: {e}")
+            raise
+        
         ############################################################### 
     
-        #3. 도메인 일치하는 게 없으면 기존 절차 수행
+        #3. 도메인 일치하는 게 없으면 전체 URL로 BERT 수행
         if not url_info:
-            # url_info = get_url_info(url)
-            url_info = get_url_info(domain_url)
-            app.logger.info(f"Extracted URL info: {url_info}")
+            try:
+                url_info = get_url_info(domain_url)
+                app.logger.info(f"Extracted URL info: {url_info}")
+            except Exception as e:
+                app.logger.error(f"Error extracting URL info: {e}")
+                raise
 
-            # features = extract_features(url)
-            features = extract_features(domain_url)
-            app.logger.info(f"Extracted features: {features}")
+            try:
+                features = extract_features(domain_url)
+                app.logger.info(f"Extracted features: {features}")
+            except Exception as e:
+                app.logger.error(f"Error extracting features: {e}")
+                raise
 
-            prediction = model.predict(features.reshape(1, -1))
-            app.logger.info(f"Prediction: {prediction}")
+            try:
+                prediction = model.predict(features.reshape(1, -1))
+                app.logger.info(f"Prediction: {prediction}")
+            except Exception as e:
+                app.logger.error(f"Error making prediction: {e}")
+                raise
 
-            url_info['predicted_type'] = int(prediction[0])  # numpy 정수형을 일반 int로 변환
+            url_info['predicted_type'] = int(prediction[0])
             try:
                 collection.insert_one(url_info)
+                app.logger.info(f"Inserted URL info into DB: {url_info}")
             except Exception as e:
                 app.logger.error(f"Error inserting URL info into DB: {e}")
+                raise
         else:
             prediction = [url_info['predicted_type']]
 
         # 4. 결과 반환 전 URL 정보 직렬화   
-        url_info_serializable = jsonify_with_objectid(url_info)
-        app.logger.info(f"URL info serializable: {url_info_serializable}")
+        try:
+            url_info_serializable = jsonify_with_objectid(url_info)
+            app.logger.info(f"URL info serializable: {url_info_serializable}")
+        except Exception as e:
+            app.logger.error(f"Error serializing URL info: {e}")
+            raise
 
         return jsonify({
             'prediction': int(prediction[0]),  # numpy 정수형을 일반 int로 변환
@@ -288,4 +306,4 @@ def predict():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5500))
     app.logger.info(f"Starting server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False)
